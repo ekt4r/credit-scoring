@@ -41,7 +41,7 @@ def ranking_metrics(validation, probability):
     }
 
 
-def evaluate(cases, name, features, make_model):
+def evaluate(cases, name, features, make_model, *, coverage_column=None):
     rows = []
     for start, end, train, validation in temporal_folds(cases):
         model = make_model()
@@ -49,6 +49,13 @@ def evaluate(cases, name, features, make_model):
         probability = model.predict_proba(validation[features])[:, 1]
         row = {"Вариант": name, "Начало": start, "Конец": end - 1,
                **ranking_metrics(validation, probability)}
+        if coverage_column is not None:
+            covered = validation[coverage_column].to_numpy(dtype=bool)
+            row["Покрытие"] = covered.mean()
+            for label, mask in (("С бюро", covered), ("Без бюро", ~covered)):
+                target = validation["target"].to_numpy()[mask]
+                if np.unique(target).size == 2:
+                    row[f"Gini · {label}"] = 2 * roc_auc_score(target, probability[mask]) - 1
         rows.append(row)
         print(row, flush=True)
     return rows
