@@ -53,10 +53,13 @@ EXCLUDED_BY_REASON = {
 }
 
 
-def load_wide_cases(excluded=()):
+def load_wide_cases(excluded=(), *, evaluation_start=None):
     cases = pd.read_parquet(TRAIN_DIR / "train_base.parquet",
                             columns=["case_id", "date_decision", "WEEK_NUM", "target"])
-    cases = cases.loc[cases["WEEK_NUM"] < FOLD_BOUNDARIES[-1]]
+    included = cases["WEEK_NUM"] < FOLD_BOUNDARIES[-1]
+    if evaluation_start is not None:
+        included |= cases["WEEK_NUM"] >= evaluation_start
+    cases = cases.loc[included]
     cases = add_application_history(cases, TRAIN_DIR).set_index("case_id", verify_integrity=True)
     decision = pd.to_datetime(cases["date_decision"])
     case_ids = pa.array(cases.index)
