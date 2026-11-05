@@ -1,0 +1,27 @@
+[project]
+name = "credit-scoring"
+version = "0.1.0"
+description = "Кредитный скоринг на данных Home Credit"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "catboost>=1.2.10,<2",
+    "numpy>=1.26,<3",
+    "pandas>=2.2,<4",
+    "pyarrow>=17,<25",
+    "scikit-learn>=1.7,<2",
+]
+
+[project.scripts]
+train-baselines = "credit_scoring.train_baselines:main"
+
+[dependency-groups]
+app = ["streamlit>=1.46,<2"]
+notebooks = [
+    "jupyterlab>=4,<5",
+    "matplotlib>=3.9,<4",
+]
+
+[build-system]
+requires = ["hatchling==1.30.0"]
+build-backend = "hatchling.build"
