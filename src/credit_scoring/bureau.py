@@ -23,11 +23,12 @@ def add_bureau_features(cases, train_dir):
         for batch in ParquetFile(path).iter_batches(batch_size=500_000, columns=columns):
             frame = batch.to_pandas()
             decision = frame["case_id"].map(decisions)
+            linked = decision.notna()
             for kind, (update, count, dpd, overdue) in CONTRACT_TYPES.items():
                 age = (decision - pd.to_datetime(frame[update])).dt.days
                 eligible = age.gt(0)
                 audit[kind]["допущено"] += int(eligible.sum())
-                audit[kind]["без даты"] += int(frame[update].isna().sum())
+                audit[kind]["без даты"] += int((linked & frame[update].isna()).sum())
                 audit[kind]["в день решения или позже"] += int(age.le(0).sum())
                 valid = frame.loc[eligible, ["case_id", count, dpd, overdue]]
                 grouped = valid.groupby("case_id", sort=False).agg(
