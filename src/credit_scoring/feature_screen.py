@@ -47,7 +47,7 @@ def dated_features(cases, sources, audit):
         linked = source["case_id"].isin(decisions.index)
         source = source.loc[linked].copy()
         age = (source["case_id"].map(decisions) - pd.to_datetime(source[date])).dt.days
-        eligible = source.loc[age.gt(0)].assign(age=age)
+        eligible = source.loc[age.gt(0)].assign(age=age.loc[age.gt(0)])
         group = eligible.groupby("case_id", sort=False)
         metrics = group["age"].agg(["size", "min", "max"])
         if amounts:
@@ -86,7 +86,7 @@ def previous_approvals(cases, audit):
     decision = rows["case_id"].map(decisions)
     valid = creation.le(approval) & approval.lt(decision)
     age = (decision - approval).dt.days
-    result = rows.loc[valid].assign(age=age).groupby("case_id", sort=False)["age"].agg(["size", "min"])
+    result = rows.loc[valid].assign(age=age.loc[valid]).groupby("case_id", sort=False)["age"].agg(["size", "min"])
     audit.append({"Источник": "applprev_1 · одобрения", "Связано": int(decision.notna().sum()),
                   "Допущено": int(valid.sum()), "Кейсов": len(result)})
     return result.astype("float32").add_prefix("approval_")

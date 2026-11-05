@@ -38,6 +38,8 @@ def combine(parts, reductions):
 
 
 def add_bureau_payments(cases, train_dir, *, windows=(), dynamics=False):
+    if dynamics and windows != (3, 6, 12):
+        raise ValueError("Динамика рассчитана для окон 3, 6 и 12 месяцев.")
     reductions = {**REDUCTIONS, **{f"{key}_{window}": "sum"
                   for window in windows for key in ("known", "late")}}
     if dynamics:
@@ -117,7 +119,7 @@ def add_bureau_payments(cases, train_dir, *, windows=(), dynamics=False):
                 for month in range(1, 13):
                     streak = np.where(metrics[f"late_month_{month}"].to_numpy(), streak + 1, 0)
                     longest = np.maximum(longest, streak)
-                window_features["longest_late_streak_12"] = longest
+                window_features["longest_late_streak_12"] = np.where(metrics["known_12"].gt(0), longest, np.nan)
             metrics = pd.DataFrame(window_features)
         blocks.append(metrics.add_prefix(f"payments_{kind}_"))
 
