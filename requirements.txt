@@ -1,0 +1,4 @@
+pandas>=2.2,<4
+pyarrow>=17,<25
+matplotlib>=3.9,<4
+jupyterlab>=4,<5
