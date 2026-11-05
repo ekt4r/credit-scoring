@@ -100,9 +100,12 @@ def screen_model():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dynamics-only", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dynamics-only", action="store_true")
+    mode.add_argument("--catboost", action="store_true",
+                      help="Перепроверить три блока с приростом Gini Stability.")
     args = parser.parse_args()
-    cases, features, _ = load_wide_cases(set().union(*EXCLUDED_BY_REASON.values()))
+    cases, features, categories = load_wide_cases(set().union(*EXCLUDED_BY_REASON.values()))
     cases, bureau = add_bureau_features(cases.reset_index(), TRAIN_DIR)
     features += bureau
     bureau_a = cases["bureau_active_rows"].gt(0) | cases["bureau_closed_rows"].gt(0)
@@ -115,6 +118,20 @@ def main():
         return
 
     audit = []
+    if args.catboost:
+        results = []
+        for name in ("Заявитель и стаж", "Бюро B · контракты", "Дебетовые карты"):
+            block = dated_features(cases, DATED_SOURCES[name], audit)
+            frame = cases.join(block, on="case_id", validate="one_to_one")
+            results.extend(evaluate(
+                frame, name, [*features, *block.columns],
+                lambda: make_booster("CatBoost").set_params(
+                    cat_features=categories, used_ram_limit="2gb",
+                ),
+            ))
+            pd.DataFrame(results).to_csv(output / "catboost.csv", index=False)
+        return
+
     for table in ("applprev_2", "other_1"):
         keys = read_table(table, ["case_id"])["case_id"]
         linked = keys.isin(cases["case_id"])
