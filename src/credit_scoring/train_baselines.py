@@ -27,16 +27,19 @@ TRAIN_DIR = Path("data/raw/parquet_files/train")
 
 
 
-def load_cases():
+def load_cases(extra_numeric=()):
     base = pd.read_parquet(TRAIN_DIR / "train_base.parquet",
                            columns=["case_id", "WEEK_NUM", "date_decision", "target"])
     paths = sorted(TRAIN_DIR.glob("train_static_0_*.parquet"))
     static = pd.concat(
-        [pd.read_parquet(path, columns=["case_id", *FEATURES]) for path in paths],
+        [pd.read_parquet(path, columns=["case_id", *FEATURES, *extra_numeric]) for path in paths],
         ignore_index=True,
     )
     cases = base.merge(static, on="case_id", how="left", validate="one_to_one")
     cases[FEATURES] = prepare_features(cases)
+    if extra_numeric:
+        columns = list(extra_numeric)
+        cases[columns] = cases[columns].astype("float32")
     return cases
 
 
