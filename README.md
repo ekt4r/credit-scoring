@@ -68,4 +68,5 @@ uv run --locked --group app streamlit run app/streamlit_app.py
 - [Аудит доступности признаков](docs/feature-availability.md)
 - [Скрининг новых источников](docs/feature-screen.md)
 - [Поздняя проверка и экспорт модели](docs/late-validation.md)
+- [Заключительные проверки модели](docs/final-checks.md)
 - [Разведочный анализ](notebooks/01_eda.ipynb)
