@@ -1,5 +1,6 @@
 """Агрегаты помесячных платежей бюро по допустимым снимкам контрактов."""
 
+import numpy as np
 import pandas as pd
 from pyarrow.parquet import ParquetFile
 
@@ -32,11 +33,15 @@ def eligible_contracts(decisions, paths):
             for kind, parts in keys.items()}
 
 
-def combine(parts):
-    return pd.concat(parts).groupby(level=0, sort=False).agg(REDUCTIONS)
+def combine(parts, reductions):
+    return pd.concat(parts).groupby(level=0, sort=False).agg(reductions)
 
 
-def add_bureau_payments(cases, train_dir):
+def add_bureau_payments(cases, train_dir, *, windows=(), dynamics=False):
+    reductions = {**REDUCTIONS, **{f"{key}_{window}": "sum"
+                  for window in windows for key in ("known", "late")}}
+    if dynamics:
+        reductions.update({f"late_month_{month}": "max" for month in range(1, 13)})
     contract_paths = sorted(train_dir.glob("train_credit_bureau_a_1_*.parquet"))
     payment_paths = sorted(train_dir.glob("train_credit_bureau_a_2_*.parquet"))
     if not contract_paths or not payment_paths:
@@ -59,30 +64,66 @@ def add_bureau_payments(cases, train_dir):
                 valid = frame.loc[calendar & age.gt(0), [*KEYS, dpd, overdue]]
                 valid = valid.loc[pd.MultiIndex.from_frame(valid[KEYS]).isin(parents[kind])]
                 late = valid[dpd].gt(0)
+                month_age = age.loc[valid.index]
                 grouped = valid.assign(
-                    late=late, months_since_late=age.loc[valid.index].where(late),
+                    late=late, months_since_late=month_age.where(late),
                 ).groupby("case_id", sort=False).agg(
                     rows=(dpd, "size"), known_dpd=(dpd, "count"), late=("late", "sum"),
                     max_dpd=(dpd, "max"), max_overdue=(overdue, "max"),
                     months_since_late=("months_since_late", "min"),
                 )
+                if windows:
+                    indicators = {
+                        f"{key}_{window}": month_age.le(window) & indicator
+                        for window in windows
+                        for key, indicator in (("known", valid[dpd].notna()), ("late", late))
+                    }
+                    if dynamics:
+                        indicators.update({
+                            f"late_month_{month}": month_age.eq(month) & late
+                            for month in range(1, 13)
+                        })
+                    grouped = grouped.join(
+                        pd.DataFrame(indicators).groupby(valid["case_id"], sort=False).sum()
+                    )
                 partial[kind].append(grouped)
         for kind, parts in partial.items():
-            shards[kind].append(combine(parts))
+            shards[kind].append(combine(parts, reductions))
         print(f"Платежи: обработан {path.name}.", flush=True)
 
     blocks = []
     for kind, parts in shards.items():
-        metrics = combine(parts)
+        metrics = combine(parts, reductions)
         metrics["late_share"] = metrics["late"].div(metrics["known_dpd"].where(metrics["known_dpd"] > 0))
         metrics = metrics.drop(columns="known_dpd")
         print(f"Платежи, {kind}: {int(metrics['rows'].sum()):,} строк, "
               f"{len(metrics):,} кейсов.", flush=True)
+        if windows:
+            window_features = {}
+            for window in windows:
+                known = metrics[f"known_{window}"]
+                window_features[f"late_{window}"] = metrics[f"late_{window}"]
+                window_features[f"late_share_{window}"] = metrics[f"late_{window}"].div(known.where(known.gt(0)))
+            if dynamics:
+                recent_known = metrics["known_3"]
+                earlier_known = metrics["known_12"] - recent_known
+                earlier_late = metrics["late_12"] - metrics["late_3"]
+                window_features["change_3_vs_4_to_12"] = (
+                    window_features["late_share_3"]
+                    - earlier_late.div(earlier_known.where(earlier_known.gt(0)))
+                )
+                streak = np.zeros(len(metrics), dtype=np.int8)
+                longest = streak.copy()
+                for month in range(1, 13):
+                    streak = np.where(metrics[f"late_month_{month}"].to_numpy(), streak + 1, 0)
+                    longest = np.maximum(longest, streak)
+                window_features["longest_late_streak_12"] = longest
+            metrics = pd.DataFrame(window_features)
         blocks.append(metrics.add_prefix(f"payments_{kind}_"))
 
     payments = pd.concat(blocks, axis=1).astype("float32")
     joined = cases.join(payments, on="case_id", validate="one_to_one")
-    for kind in PAYMENTS:
+    for kind in PAYMENTS if not windows else ():
         count = f"payments_{kind}_rows"
         joined[count] = joined[count].fillna(0)
     return joined, payments.columns.tolist()
