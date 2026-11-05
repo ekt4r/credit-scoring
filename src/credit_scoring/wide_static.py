@@ -14,6 +14,7 @@ from credit_scoring.boosters import make_booster
 from credit_scoring.bureau import add_bureau_features
 from credit_scoring.history import HISTORY_FEATURES, add_application_history
 from credit_scoring.scoring import MISSING_CATEGORY
+from credit_scoring.static_cb import QUERY_FEATURES, add_bureau_queries
 from credit_scoring.temporal import FOLD_BOUNDARIES, evaluate
 from credit_scoring.train_baselines import TRAIN_DIR
 
@@ -109,16 +110,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ram-limit", default="2gb",
                         help="Мягкий лимит памяти CatBoost при расчёте статистик категорий.")
-    parser.add_argument("--variant", choices=("full", "screened", "screened-bureau"), default="full")
+    parser.add_argument("--variant", choices=("full", "screened", "screened-bureau", "screened-bureau-queries"), default="full")
     args = parser.parse_args()
     excluded = set().union(*EXCLUDED_BY_REASON.values()) if args.variant != "full" else ()
     cases, features, categories = load_wide_cases(excluded)
     coverage_column = None
-    if args.variant == "screened-bureau":
+    if args.variant in {"screened-bureau", "screened-bureau-queries"}:
         cases, bureau_features = add_bureau_features(cases.reset_index(), TRAIN_DIR)
         features += bureau_features
         coverage_column = "bureau_covered"
         cases[coverage_column] = cases["bureau_active_rows"].gt(0) | cases["bureau_closed_rows"].gt(0)
+    if args.variant == "screened-bureau-queries":
+        cases = add_bureau_queries(cases, TRAIN_DIR)
+        features += QUERY_FEATURES
     print(f"Вариант {args.variant}, входных полей: {len(features)}.", flush=True)
     weekly = [] if args.variant != "full" else None
     rows = evaluate(
