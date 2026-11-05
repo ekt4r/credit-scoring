@@ -33,11 +33,23 @@ def eligible_contracts(decisions, paths):
             for kind, parts in keys.items()}
 
 
-def combine(parts, reductions):
-    return pd.concat(parts).groupby(level=0, sort=False).agg(reductions)
+def combine(parts, reductions, levels=0):
+    return pd.concat(parts).groupby(level=levels, sort=False).agg(reductions)
 
 
-def add_bureau_payments(cases, train_dir, *, windows=(), dynamics=False):
+def summarize_contracts(metrics):
+    shares = metrics["late"].div(metrics["known_dpd"].where(metrics["known_dpd"].gt(0)))
+    grouped = shares.groupby(level=0, sort=False).agg(["count", "mean", "max", "std"])
+    grouped["variation"] = grouped["std"].div(grouped["mean"].where(grouped["mean"].gt(0)))
+    grouped["months_since_late"] = metrics["months_since_late"].groupby(level=0, sort=False).min()
+    return grouped
+
+
+def add_bureau_payments(cases, train_dir, *, windows=(), dynamics=False, by_contract=False):
+    if by_contract and windows:
+        raise ValueError("Агрегация по контракту выполняется отдельно от окон.")
+    group_keys = KEYS if by_contract else "case_id"
+    levels = [0, 1] if by_contract else 0
     if dynamics and windows != (3, 6, 12):
         raise ValueError("Динамика рассчитана для окон 3, 6 и 12 месяцев.")
     reductions = {**REDUCTIONS, **{f"{key}_{window}": "sum"
@@ -69,7 +81,7 @@ def add_bureau_payments(cases, train_dir, *, windows=(), dynamics=False):
                 month_age = age.loc[valid.index]
                 grouped = valid.assign(
                     late=late, months_since_late=month_age.where(late),
-                ).groupby("case_id", sort=False).agg(
+                ).groupby(group_keys, sort=False).agg(
                     rows=(dpd, "size"), known_dpd=(dpd, "count"), late=("late", "sum"),
                     max_dpd=(dpd, "max"), max_overdue=(overdue, "max"),
                     months_since_late=("months_since_late", "min"),
@@ -90,12 +102,15 @@ def add_bureau_payments(cases, train_dir, *, windows=(), dynamics=False):
                     )
                 partial[kind].append(grouped)
         for kind, parts in partial.items():
-            shards[kind].append(combine(parts, reductions))
+            shards[kind].append(combine(parts, reductions, levels))
         print(f"Платежи: обработан {path.name}.", flush=True)
 
     blocks = []
     for kind, parts in shards.items():
-        metrics = combine(parts, reductions)
+        metrics = combine(parts, reductions, levels)
+        if by_contract:
+            blocks.append(summarize_contracts(metrics).add_prefix(f"contract_{kind}_"))
+            continue
         metrics["late_share"] = metrics["late"].div(metrics["known_dpd"].where(metrics["known_dpd"] > 0))
         metrics = metrics.drop(columns="known_dpd")
         print(f"Платежи, {kind}: {int(metrics['rows'].sum()):,} строк, "
@@ -125,7 +140,7 @@ def add_bureau_payments(cases, train_dir, *, windows=(), dynamics=False):
 
     payments = pd.concat(blocks, axis=1).astype("float32")
     joined = cases.join(payments, on="case_id", validate="one_to_one")
-    for kind in PAYMENTS if not windows else ():
+    for kind in PAYMENTS if not windows and not by_contract else ():
         count = f"payments_{kind}_rows"
         joined[count] = joined[count].fillna(0)
     return joined, payments.columns.tolist()
