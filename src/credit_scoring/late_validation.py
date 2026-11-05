@@ -1,6 +1,10 @@
 """Сравнение CatBoost со стажем и без него на позднем периоде."""
 
+import argparse
 from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import numpy as np
 
 import pandas as pd
 from sklearn.metrics import roc_auc_score
@@ -8,6 +12,10 @@ from sklearn.metrics import roc_auc_score
 from credit_scoring.boosters import make_booster
 from credit_scoring.bureau import add_bureau_features
 from credit_scoring.feature_screen import DATED_SOURCES, dated_features
+from credit_scoring.scoring import save_bundle
+from credit_scoring.selected_model import (
+    SCHEMA_VERSION, SELECTED_PATH, feature_schema, load_selected, predict_selected,
+)
 from credit_scoring.temporal import CALIBRATION_END, FOLD_BOUNDARIES, ranking_metrics
 from credit_scoring.train_baselines import TRAIN_DIR
 from credit_scoring.wide_static import EXCLUDED_BY_REASON, load_wide_cases
@@ -40,11 +48,46 @@ def segment_metrics(predictions, groups):
     return rows
 
 
+def export_control(cases, features, categories):
+    train = cases.loc[cases["WEEK_NUM"] < FOLD_BOUNDARIES[-1]]
+    evaluation = cases.loc[cases["WEEK_NUM"] >= CALIBRATION_END]
+    model = make_booster("CatBoost").set_params(cat_features=categories, used_ram_limit="2gb")
+    model.fit(train[features], train["target"])
+    expected = model.predict_proba(evaluation[features], thread_count=1)[:, 1]
+    target = evaluation[["case_id", "WEEK_NUM", "target"]]
+    metrics = compare(target, expected, round(len(target) * REVIEW_RATE))
+    metadata = {
+        "schema_version": SCHEMA_VERSION,
+        "features": feature_schema(features, categories),
+        "train_weeks": [0, FOLD_BOUNDARIES[-1] - 1],
+        "evaluation_weeks": [CALIBRATION_END, int(evaluation["WEEK_NUM"].max())],
+        "evaluation_cases": len(evaluation),
+        "metrics": metrics,
+    }
+    SELECTED_PATH.parent.mkdir(exist_ok=True)
+    with TemporaryDirectory(dir=SELECTED_PATH.parent) as directory:
+        staged = Path(directory) / SELECTED_PATH.name
+        save_bundle(model, metadata, staged)
+        loaded, contract = load_selected(staged)
+        actual = predict_selected(loaded, contract, evaluation)
+        np.testing.assert_array_equal(expected, actual)
+        staged.replace(SELECTED_PATH)
+    print(f"Экспорт: {SELECTED_PATH}. {len(actual):,} скоров совпали точно.", flush=True)
+    print(metrics, flush=True)
+
+
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--export-control", action="store_true",
+                        help="Обучить, проверить и сохранить выбранную модель на 120 полях.")
+    args = parser.parse_args()
     excluded = set().union(*EXCLUDED_BY_REASON.values())
     cases, features, categories = load_wide_cases(excluded, evaluation_start=CALIBRATION_END)
     cases, bureau = add_bureau_features(cases.reset_index(), TRAIN_DIR)
     features += bureau
+    if args.export_control:
+        export_control(cases, features, categories)
+        return
     audit = []
     employment = dated_features(cases, DATED_SOURCES["Заявитель и стаж"], audit)
     cases = cases.join(employment, on="case_id", validate="one_to_one")

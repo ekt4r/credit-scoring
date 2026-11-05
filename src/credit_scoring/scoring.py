@@ -43,11 +43,16 @@ def save_bundle(model, report, path=ARTIFACT_PATH):
         bundle_path.replace(path)
 
 
-def load_bundle(path=ARTIFACT_PATH):
+def read_bundle(path):
     with ZipFile(path) as bundle:
         model = CatBoostClassifier()
         model.load_model(blob=bundle.read("model.cbm"))
         report = json.loads(bundle.read("report.json"))
+    return model, report
+
+
+def load_bundle(path=ARTIFACT_PATH):
+    model, report = read_bundle(path)
     if model.feature_names_ != FEATURES:
         raise ValueError("Схема модели устарела. Запустите обучение заново.")
     return model, report
