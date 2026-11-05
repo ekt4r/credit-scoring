@@ -26,29 +26,40 @@ def temporal_folds(cases):
         yield start, end, train, validation
 
 
-def ranking_metrics(validation, probability):
+def weekly_gini(validation, probability):
     frame = validation[["WEEK_NUM", "target"]].assign(probability=probability)
-    weekly = pd.Series({
+    return pd.Series({
         week: 2 * roc_auc_score(group["target"], group["probability"]) - 1
         for week, group in frame.groupby("WEEK_NUM")
     })
+
+
+def stability_penalties(weekly):
     slope, intercept = np.polyfit(weekly.index, weekly, deg=1)
     residuals = weekly - (slope * weekly.index + intercept)
+    return 88 * min(0, slope), -0.5 * residuals.std(ddof=0)
+
+
+def ranking_metrics(validation, probability, weekly=None):
+    if weekly is None:
+        weekly = weekly_gini(validation, probability)
+    trend, variation = stability_penalties(weekly)
     return {
-        "Gini": 2 * roc_auc_score(frame["target"], probability) - 1,
+        "Gini": 2 * roc_auc_score(validation["target"], probability) - 1,
         "Средняя недельная Gini": weekly.mean(),
-        "Gini Stability": weekly.mean() + 88 * min(0, slope) - 0.5 * residuals.std(ddof=0),
+        "Gini Stability": weekly.mean() + trend + variation,
     }
 
 
-def evaluate(cases, name, features, make_model, *, coverage_column=None):
+def evaluate(cases, name, features, make_model, *, coverage_column=None, weekly_rows=None):
     rows = []
     for start, end, train, validation in temporal_folds(cases):
         model = make_model()
         model.fit(train[features], train["target"])
         probability = model.predict_proba(validation[features])[:, 1]
+        weekly = weekly_gini(validation, probability)
         row = {"Вариант": name, "Начало": start, "Конец": end - 1,
-               **ranking_metrics(validation, probability)}
+               **ranking_metrics(validation, probability, weekly)}
         if coverage_column is not None:
             covered = validation[coverage_column].to_numpy(dtype=bool)
             row["Покрытие"] = covered.mean()
@@ -56,6 +67,16 @@ def evaluate(cases, name, features, make_model, *, coverage_column=None):
                 target = validation["target"].to_numpy()[mask]
                 if np.unique(target).size == 2:
                     row[f"Gini · {label}"] = 2 * roc_auc_score(target, probability[mask]) - 1
+        if weekly_rows is not None:
+            trend, variation = stability_penalties(weekly)
+            row.update({"Штраф за тренд": trend, "Штраф за разброс": variation})
+            coverage = (validation.groupby("WEEK_NUM")[coverage_column].mean()
+                        if coverage_column is not None else None)
+            for week, gini in weekly.items():
+                week_row = {"Неделя": week, "Gini": gini}
+                if coverage is not None:
+                    week_row["Покрытие"] = coverage[week]
+                weekly_rows.append(week_row)
         rows.append(row)
         print(row, flush=True)
     return rows
