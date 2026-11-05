@@ -16,6 +16,7 @@ dependencies = [
 train-baselines = "credit_scoring.train_baselines:main"
 
 [dependency-groups]
+experiments = ["lightgbm>=4.6,<5", "xgboost>=3.2,<4"]
 app = ["streamlit>=1.46,<2"]
 notebooks = [
     "jupyterlab>=4,<5",
