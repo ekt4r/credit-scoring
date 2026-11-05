@@ -384,3 +384,5 @@ uv run --locked python -m credit_scoring.wide_static --variant screened-bureau-p
 средняя недельная Gini — **0,5709** на трёх временных фолдах.
 
 [Отчёт о скрининге оставшихся источников и производных признаков](docs/feature-screen.md)
+
+[Поздняя проверка CatBoost со стажем и без него](docs/late-validation.md)
