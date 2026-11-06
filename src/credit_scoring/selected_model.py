@@ -48,7 +48,7 @@ def load_selected(path=SELECTED_PATH):
     return model, metadata
 
 
-def predict_selected(model, metadata, frame):
+def prepare_selected(metadata, frame):
     schema = metadata["features"]
     names = [field["name"] for field in schema]
     missing = sorted(set(names) - set(frame.columns))
@@ -64,4 +64,8 @@ def predict_selected(model, metadata, frame):
             if np.isinf(column).any():
                 raise ValueError(f"Бесконечное значение поля {name}.")
             features[name] = column if field["missing"] is None else column.fillna(field["missing"])
-    return model.predict_proba(features, thread_count=1)[:, 1]
+    return features
+
+
+def predict_selected(model, metadata, frame):
+    return model.predict_proba(prepare_selected(metadata, frame), thread_count=1)[:, 1]

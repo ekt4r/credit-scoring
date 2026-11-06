@@ -1,11 +1,14 @@
 """Интерфейс демонстрационного кредитного скоринга."""
 
+from pathlib import Path
 from zipfile import BadZipFile
 
 from catboost import CatBoostError
 import pandas as pd
 import streamlit as st
 
+from credit_scoring.demo_profile import LABELS, PROFILES, build_profile, explain_profile
+from credit_scoring.selected_model import SELECTED_PATH, load_selected
 from credit_scoring.scoring import (
     ARTIFACT_PATH, MISSING_CATEGORY, RISK_THRESHOLD, load_bundle, predict_risk,
 )
@@ -127,20 +130,85 @@ def show_quality(report):
                "Если модель не пометила ни одной заявки, precision не определён.")
 
 
+@st.cache_resource
+def cached_selected(path, version):
+    return load_selected(path)
+
+
+def show_profile(model, metadata):
+    st.header("Синтетический профиль")
+    st.caption("CatBoost на 120 полях. Пример показывает расчёт на дату решения. "
+               "Незаполненные поля анкеты передаются как пропуски.")
+    name = st.selectbox("Профиль", list(PROFILES))
+    cases, static, applications, bureau = build_profile(name, metadata)
+    st.write("Дата решения — 1 августа 2020 года.")
+    with st.expander("Анкета и история", expanded=True):
+        st.write({LABELS.get(key, key): value for key, value in static.items() if value is not None})
+        st.write("Предыдущие заявки")
+        st.dataframe(applications.drop(columns=["case_id", "num_group1"]))
+        st.write("Снимки бюро")
+        st.dataframe(bureau[["lastupdate_1112D", "dpdmax_139P", "Учтён"]])
+    with st.expander("Агрегаты, переданные в модель"):
+        fields = [field["name"] for field in metadata["features"] if field["source"] != "static_0"]
+        st.dataframe(cases[fields].rename(columns=LABELS).T.rename(columns={0: "Значение"}))
+    if st.button("Оценить профиль", type="primary"):
+        risk, explanation, base = explain_profile(model, metadata, cases)
+        st.metric("Исходный скор CatBoost", f"{risk:.2%}")
+        st.subheader("Что повлияло на скор")
+        st.bar_chart(explanation, x="Признак", y="Вклад в логарифм шансов", horizontal=True)
+        st.dataframe(explanation, hide_index=True)
+        st.caption(f"Базовый логарифм шансов: {base:.3f}. Положительный вклад повышает скор. "
+                   "Показаны восемь крупнейших вкладов SHAP для этого примера.")
+
+
+def show_review_curve(metadata):
+    st.header("Качество модели на 120 полях")
+    st.caption("Поздняя локальная проверка, недели 73–91. Объём проверки выбирается "
+               "ретроспективно по заявкам с наивысшим скором.")
+    st.metric("Gini Stability", f"{metadata['metrics']['Gini Stability']:.4f}")
+    curve_path = Path("artifacts/review-curve.csv")
+    weekly_path = curve_path.with_name("selected-weekly-gini.csv")
+    if not curve_path.exists() or not weekly_path.exists():
+        st.info("Сначала подготовьте агрегаты качества.")
+        st.code("uv run --locked python -m credit_scoring.review_curve", language="bash")
+        return
+    curve = pd.read_csv(curve_path).set_index("Доля проверки, %")
+    st.subheader("Охват дефолтов при заданном объёме проверки")
+    st.line_chart(curve[["Recall", "Случайный отбор"]] * 100, y_label="Найдено дефолтов, %")
+    share = st.slider("Доля заявок на проверку, %", 0, 100, 10)
+    row = curve.loc[share]
+    flagged, found = int(row["Помечено"]), int(row["Найдено дефолтов"])
+    columns = st.columns(4)
+    columns[0].metric("Проверить", f"{flagged:,}")
+    columns[1].metric("Найдено дефолтов", f"{found:,}")
+    columns[2].metric("Recall", f"{row['Recall']:.2%}")
+    columns[3].metric("Precision", f"{found / flagged:.2%}" if flagged else "—")
+    st.subheader("Gini по неделям")
+    st.line_chart(pd.read_csv(weekly_path).set_index("Неделя"), y_label="Gini")
+
+
 st.set_page_config(page_title="Кредитный скоринг", layout="wide")
 st.title("Кредитный скоринг")
-page = st.sidebar.radio("Страница", ["Оценить заявку", "Качество модели"])
+page = st.sidebar.radio("Страница", [
+    "Синтетический профиль", "Охват дефолтов", "Оценить заявку", "Качество модели",
+])
 try:
-    model, report = cached_bundle(ARTIFACT_PATH, ARTIFACT_PATH.stat().st_mtime_ns)
+    if page in {"Синтетический профиль", "Охват дефолтов"}:
+        selected, metadata = cached_selected(SELECTED_PATH, SELECTED_PATH.stat().st_mtime_ns)
+    else:
+        model, report = cached_bundle(ARTIFACT_PATH, ARTIFACT_PATH.stat().st_mtime_ns)
 except FileNotFoundError:
-    st.info("Сначала обучите модели из корня проекта.")
-    st.code("uv run --locked train-baselines", language="bash")
+    st.info("Сначала подготовьте артефакт модели по инструкции в README.")
     st.stop()
 except (BadZipFile, CatBoostError, KeyError, ValueError):
     st.error("Не удалось загрузить артефакт модели. Повторите обучение.")
     st.stop()
 
-if page == "Оценить заявку":
+if page == "Синтетический профиль":
+    show_profile(selected, metadata)
+elif page == "Охват дефолтов":
+    show_review_curve(metadata)
+elif page == "Оценить заявку":
     show_application(model, report)
 else:
     show_quality(report)
