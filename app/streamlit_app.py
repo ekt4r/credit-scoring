@@ -100,36 +100,6 @@ def show_application(model, report):
         st.caption("Вероятности без дополнительной калибровки. Результат предназначен для демонстрации.")
 
 
-def show_quality(report):
-    st.header("Качество модели")
-    st.caption(f"Отложенный период {report['first_date']} — {report['last_date']}. "
-               f"{report['cases']:,} кейсов, из них {report['defaults']:,} дефолтов.")
-    st.dataframe(pd.DataFrame.from_dict(report["metrics"], orient="index")
-                 .rename_axis("Модель").round(4))
-    st.subheader("Gini по неделям")
-    st.line_chart(pd.DataFrame(report["weekly_gini"]).set_index("Неделя"),
-                  x_label="Неделя принятия решения", y_label="Gini")
-
-    st.subheader("Что меняется при выборе порога")
-    threshold = st.slider("Порог прогнозного риска, %", 0, 100, round(100 * RISK_THRESHOLD))
-    threshold_table = pd.DataFrame(report["thresholds"])
-    selected = threshold_table.loc[threshold_table["Порог"] == threshold].copy()
-    selected["Precision"] = selected["Найдено дефолтов"].div(
-        selected["Помечено"].where(selected["Помечено"] > 0)
-    )
-    selected["Recall"] = selected["Найдено дефолтов"] / report["defaults"]
-    st.dataframe(
-        selected.drop(columns="Порог").set_index("Модель"),
-        column_config={
-            "Precision": st.column_config.NumberColumn(format="percent"),
-            "Recall": st.column_config.NumberColumn(format="percent"),
-        },
-    )
-    st.caption("Precision — доля дефолтов среди помеченных. "
-               "Recall — доля найденных среди всех дефолтов. "
-               "Если модель не пометила ни одной заявки, precision не определён.")
-
-
 @st.cache_resource
 def cached_selected(path, version):
     return load_selected(path)
@@ -161,11 +131,15 @@ def show_profile(model, metadata):
                    "Показаны восемь крупнейших вкладов SHAP для этого примера.")
 
 
-def show_review_curve(metadata):
+def show_quality(metadata):
     st.header("Качество модели на 120 полях")
     st.caption("Поздняя локальная проверка, недели 73–91. Объём проверки выбирается "
                "ретроспективно по заявкам с наивысшим скором.")
-    st.metric("Gini Stability", f"{metadata['metrics']['Gini Stability']:.4f}")
+    metrics = metadata["metrics"]
+    columns = st.columns(3)
+    columns[0].metric("Gini Stability", f"{metrics['Gini Stability']:.4f}")
+    columns[1].metric("Средняя недельная Gini", f"{metrics['Средняя недельная Gini']:.4f}")
+    columns[2].metric("Кейсов в проверке", f"{metadata['evaluation_cases']:,}")
     curve_path = Path("artifacts/review-curve.csv")
     weekly_path = curve_path.with_name("selected-weekly-gini.csv")
     if not curve_path.exists() or not weekly_path.exists():
@@ -190,10 +164,10 @@ def show_review_curve(metadata):
 st.set_page_config(page_title="Кредитный скоринг", layout="wide")
 st.title("Кредитный скоринг")
 page = st.sidebar.radio("Страница", [
-    "Синтетический профиль", "Охват дефолтов", "Оценить заявку", "Качество модели",
+    "Синтетический профиль", "Качество модели", "Оценить заявку",
 ])
 try:
-    if page in {"Синтетический профиль", "Охват дефолтов"}:
+    if page != "Оценить заявку":
         selected, metadata = cached_selected(SELECTED_PATH, SELECTED_PATH.stat().st_mtime_ns)
     else:
         model, report = cached_bundle(ARTIFACT_PATH, ARTIFACT_PATH.stat().st_mtime_ns)
@@ -206,9 +180,7 @@ except (BadZipFile, CatBoostError, KeyError, ValueError):
 
 if page == "Синтетический профиль":
     show_profile(selected, metadata)
-elif page == "Охват дефолтов":
-    show_review_curve(metadata)
-elif page == "Оценить заявку":
-    show_application(model, report)
+elif page == "Качество модели":
+    show_quality(metadata)
 else:
-    show_quality(report)
+    show_application(model, report)
